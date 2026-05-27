@@ -1,0 +1,73 @@
+# ============================================================
+# Planning / documentation — kept local, not in repo
+# ============================================================
+*.md
+docs/
+
+# ============================================================
+# Credentials & secrets — NEVER commit
+# ============================================================
+cred.txt
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# AWS credentials (in case anyone copies them locally)
+.aws/
+credentials
+
+# ============================================================
+# Terraform
+# ============================================================
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ============================================================
+# Python (when AI backend is added)
+# ============================================================
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ============================================================
+# Node (when frontend is added)
+# ============================================================
+node_modules/
+.next/
+dist/
+build/
+.vercel
+
+# ============================================================
+# IDE / OS
+# ============================================================
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# Logs & temp
+# ============================================================
+*.log
+tmp/
+temp/
+*.bak
