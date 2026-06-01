@@ -1,0 +1,126 @@
+#!/bin/bash
+# Edge bootstrap for ${site_name}
+# Auto-installs strongSwan and configures from AWS Site-to-Site VPN
+set -ex
+exec > >(tee -a /var/log/edge-bootstrap.log) 2>&1
+
+echo "===== Edge bootstrap started at $(date) ====="
+
+export DEBIAN_FRONTEND=noninteractive
+SITE_NAME="${site_name}"
+REGION="${aws_region}"
+
+# Install packages
+apt-get update -y -qq
+apt-get install -y -qq strongswan awscli xmlstarlet jq curl
+
+# Enable IP forwarding
+sysctl -w net.ipv4.ip_forward=1
+grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+
+# IMDSv2 token for metadata calls
+get_token() {
+  curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"
+}
+
+# Wait for EIP to be attached (Terraform attaches it after instance launch)
+echo "==> Waiting for EIP attachment..."
+sleep 30
+TOKEN=$(get_token)
+MY_PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/public-ipv4)
+echo "Public IP (EIP): $MY_PUBLIC_IP"
+
+# Wait for VPN connection to be created by Terraform
+VPN_NAME="vi-demo-site-$SITE_NAME-vpn"
+echo "==> Waiting for VPN connection [$VPN_NAME]..."
+VPN_ID=""
+for i in $(seq 1 80); do
+  VPN_ID=$(aws ec2 describe-vpn-connections \
+    --filters "Name=tag:Name,Values=$VPN_NAME" "Name=state,Values=available" \
+    --region "$REGION" \
+    --query 'VpnConnections[0].VpnConnectionId' \
+    --output text 2>/dev/null || echo "")
+  if [ -n "$VPN_ID" ] && [ "$VPN_ID" != "None" ]; then
+    echo "Found VPN: $VPN_ID"
+    break
+  fi
+  echo "  attempt $i/80 - VPN not yet available, sleeping 15s"
+  sleep 15
+done
+
+if [ -z "$VPN_ID" ] || [ "$VPN_ID" = "None" ]; then
+  echo "ERROR: VPN connection not found after 20 minutes"
+  exit 1
+fi
+
+# Fetch VPN configuration XML
+echo "==> Fetching VPN configuration..."
+CONFIG_XML=$(aws ec2 describe-vpn-connections \
+  --vpn-connection-ids "$VPN_ID" \
+  --region "$REGION" \
+  --query 'VpnConnections[0].CustomerGatewayConfiguration' \
+  --output text)
+
+# Parse tunnel parameters
+T1_OUTSIDE=$(echo "$CONFIG_XML" | xmlstarlet sel -t -v "/vpn_connection/ipsec_tunnel[1]/vpn_gateway/tunnel_outside_address/ip_address")
+T1_PSK=$(echo "$CONFIG_XML" | xmlstarlet sel -t -v "/vpn_connection/ipsec_tunnel[1]/ike/pre_shared_key")
+T2_OUTSIDE=$(echo "$CONFIG_XML" | xmlstarlet sel -t -v "/vpn_connection/ipsec_tunnel[2]/vpn_gateway/tunnel_outside_address/ip_address")
+T2_PSK=$(echo "$CONFIG_XML" | xmlstarlet sel -t -v "/vpn_connection/ipsec_tunnel[2]/ike/pre_shared_key")
+echo "Tunnel 1 -> $T1_OUTSIDE"
+echo "Tunnel 2 -> $T2_OUTSIDE"
+
+# Write ipsec.conf
+cat > /etc/ipsec.conf <<EOF
+config setup
+    charondebug="ike 1, knl 1, cfg 0"
+    uniqueids=no
+
+conn %default
+    ikelifetime=28800s
+    keylife=3600s
+    rekeymargin=540s
+    keyingtries=%forever
+    keyexchange=ikev1
+    mobike=no
+    ike=aes128-sha1-modp1024!
+    esp=aes128-sha1-modp1024!
+    authby=secret
+    type=tunnel
+    auto=start
+    leftsubnet=0.0.0.0/0
+    rightsubnet=0.0.0.0/0
+    dpdaction=restart
+    dpddelay=10s
+    dpdtimeout=30s
+
+conn aws-tunnel-1
+    left=%defaultroute
+    leftid=$MY_PUBLIC_IP
+    right=$T1_OUTSIDE
+    rightid=$T1_OUTSIDE
+
+conn aws-tunnel-2
+    left=%defaultroute
+    leftid=$MY_PUBLIC_IP
+    right=$T2_OUTSIDE
+    rightid=$T2_OUTSIDE
+EOF
+
+# Write ipsec.secrets
+cat > /etc/ipsec.secrets <<EOF
+$MY_PUBLIC_IP $T1_OUTSIDE : PSK "$T1_PSK"
+$MY_PUBLIC_IP $T2_OUTSIDE : PSK "$T2_PSK"
+EOF
+chmod 600 /etc/ipsec.secrets
+
+# Start strongSwan
+systemctl enable strongswan-starter 2>/dev/null || systemctl enable strongswan
+systemctl restart strongswan-starter 2>/dev/null || systemctl restart strongswan
+
+sleep 8
+echo "==> strongSwan status:"
+ipsec statusall || true
+
+echo "===== Edge bootstrap completed at $(date) ====="
