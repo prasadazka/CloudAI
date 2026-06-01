@@ -5,7 +5,7 @@ Uses LangGraph state machine with conditional routing.
 
 import uuid
 from datetime import datetime, timezone
-from typing import Literal, Optional, TypedDict
+from typing import Callable, Literal, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -38,6 +38,9 @@ FinalDecision = Literal[
 ]
 
 
+TraceCallback = Callable[[str, str], None]
+
+
 class SupervisorState(TypedDict):
     user_request: str
     customer_name: str
@@ -56,11 +59,19 @@ class SupervisorState(TypedDict):
     clarification_question: Optional[str]
     error: Optional[str]
     trace: list[str]
+    trace_callback: Optional[TraceCallback]
 
 
 def _log(state: SupervisorState, message: str) -> None:
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    state["trace"].append(f"[{ts}] {message}")
+    line = f"[{ts}] {message}"
+    state["trace"].append(line)
+    cb = state.get("trace_callback")
+    if cb:
+        try:
+            cb(state["workflow_id"], line)
+        except Exception:
+            pass
 
 
 def intake_node(state: SupervisorState) -> SupervisorState:
@@ -360,6 +371,8 @@ def run_workflow(
     customer_name: str = "Unnamed Customer",
     deployment_mode: DeploymentMode = "plan_only",
     approval_token: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    trace_callback: Optional[TraceCallback] = None,
 ) -> SupervisorState:
     """
     End-to-end: NL request -> final decision + PDF + trace.
@@ -370,7 +383,8 @@ def run_workflow(
                  Will create real AWS resources (~Rs 13/hr until destroyed).
       - "destroy": terraform destroy. Requires approval_token.
     """
-    workflow_id = f"wf-{uuid.uuid4().hex[:12]}"
+    if not workflow_id:
+        workflow_id = f"wf-{uuid.uuid4().hex[:12]}"
     initial: SupervisorState = {
         "user_request": user_request,
         "customer_name": customer_name,
@@ -389,6 +403,12 @@ def run_workflow(
         "clarification_question": None,
         "error": None,
         "trace": [f"[start] Workflow {workflow_id} initiated (deploy={deployment_mode})"],
+        "trace_callback": trace_callback,
     }
+    if trace_callback:
+        try:
+            trace_callback(workflow_id, initial["trace"][0])
+        except Exception:
+            pass
     app = build_supervisor_graph()
     return app.invoke(initial)
