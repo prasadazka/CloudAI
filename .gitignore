@@ -76,5 +76,6 @@ temp/
 # Generated artifacts (PDFs, reports)
 # ============================================================
 agents/audits/
+agents/audit/_vi_logo_cropped.png
 iac_output/
 *.pdf

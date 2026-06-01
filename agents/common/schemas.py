@@ -158,6 +158,47 @@ class DeploymentResult(BaseModel):
     summary: str = ""
 
 
+TestOutcome = Literal["pass", "fail", "borderline", "skipped"]
+ValidationStatus = Literal[
+    "all_pass",
+    "pass_with_warnings",
+    "some_failed",
+    "all_failed",
+    "tests_skipped",
+]
+ValidationMode = Literal["real", "simulated", "skipped"]
+
+
+class SiteTest(BaseModel):
+    name: Literal["ping", "throughput", "qos", "encryption"]
+    outcome: TestOutcome
+    measured: str = Field(description="Human-readable measured value")
+    target: str = Field(description="Target / SLA threshold")
+    notes: str = ""
+
+
+class SiteValidation(BaseModel):
+    site_name: str
+    overall: TestOutcome
+    tests: list[SiteTest] = Field(default_factory=list)
+
+
+class ValidationResult(BaseModel):
+    status: ValidationStatus
+    mode: ValidationMode
+    sla_target_uptime_pct: float = Field(default=99.5, ge=0.0, le=100.0)
+    sites_tested: int = Field(default=0, ge=0)
+    sites_passed: int = Field(default=0, ge=0)
+    sites_borderline: int = Field(default=0, ge=0)
+    sites_failed: int = Field(default=0, ge=0)
+    sites_detail: list[SiteValidation] = Field(default_factory=list)
+    summary: str = ""
+    disclaimer: Optional[str] = Field(
+        default=None,
+        description="Transparency note when results are simulated, not measured",
+    )
+
+
 class DiscoveryResult(BaseModel):
     customer_found: bool
     customer_profile: Optional[CustomerProfile] = None

@@ -19,12 +19,14 @@ from agents.common.schemas import (
     IaCResult,
     IntakeResult,
     PolicyResult,
+    ValidationResult,
 )
 from agents.deployment.agent import run_deployment
 from agents.discovery.agent import run_discovery
 from agents.iac.agent import run_iac
 from agents.intake.agent import run_intake
 from agents.policy.agent import run_policy
+from agents.validation.agent import run_validation
 
 
 FinalDecision = Literal[
@@ -48,6 +50,7 @@ class SupervisorState(TypedDict):
     architecture: Optional[ArchitectureResult]
     iac: Optional[IaCResult]
     deployment: Optional[DeploymentResult]
+    validation: Optional[ValidationResult]
     audit_pdf_path: Optional[str]
     final_decision: Optional[FinalDecision]
     clarification_question: Optional[str]
@@ -187,6 +190,27 @@ def deployment_node(state: SupervisorState) -> SupervisorState:
     return state
 
 
+def validation_node(state: SupervisorState) -> SupervisorState:
+    _log(state, "Supervisor: routing to Validation Agent")
+    try:
+        result = run_validation(
+            intake=state["intake"],
+            architecture=state.get("architecture"),
+            deployment=state.get("deployment"),
+        )
+        state["validation"] = result
+        _log(
+            state,
+            f"Validation: {result.status} (mode={result.mode}) - "
+            f"{result.sites_passed}/{result.sites_tested} pass, "
+            f"{result.sites_borderline} borderline, {result.sites_failed} failed",
+        )
+    except Exception as e:
+        state["error"] = f"Validation failed: {type(e).__name__}: {e}"
+        _log(state, f"Validation ERROR: {e}")
+    return state
+
+
 def audit_node(state: SupervisorState) -> SupervisorState:
     _log(state, "Supervisor: routing to Audit Agent for PDF generation")
     try:
@@ -196,6 +220,10 @@ def audit_node(state: SupervisorState) -> SupervisorState:
             customer_name=state["customer_name"],
             output_dir="audits",
             approval_signoff=None,
+            architecture=state.get("architecture"),
+            deployment=state.get("deployment"),
+            validation=state.get("validation"),
+            workflow_id=state["workflow_id"],
         )
         state["audit_pdf_path"] = pdf_path
         _log(state, f"Audit: PDF generated -> {pdf_path}")
@@ -256,7 +284,11 @@ def _after_iac(state: SupervisorState) -> str:
 
 
 def _after_deployment(state: SupervisorState) -> str:
-    return "audit"  # always produce audit PDF, even after failures
+    return "validation"
+
+
+def _after_validation(state: SupervisorState) -> str:
+    return "audit"  # always produce audit PDF
 
 
 def build_supervisor_graph():
@@ -268,6 +300,7 @@ def build_supervisor_graph():
     graph.add_node("run_architecture", architecture_node)
     graph.add_node("run_iac", iac_node)
     graph.add_node("run_deployment", deployment_node)
+    graph.add_node("run_validation", validation_node)
     graph.add_node("run_audit", audit_node)
     graph.add_node("ask_clarification", clarification_node)
 
@@ -309,6 +342,11 @@ def build_supervisor_graph():
     graph.add_conditional_edges(
         "run_deployment",
         _after_deployment,
+        {"validation": "run_validation"},
+    )
+    graph.add_conditional_edges(
+        "run_validation",
+        _after_validation,
         {"audit": "run_audit"},
     )
     graph.add_edge("run_audit", END)
@@ -345,6 +383,7 @@ def run_workflow(
         "architecture": None,
         "iac": None,
         "deployment": None,
+        "validation": None,
         "audit_pdf_path": None,
         "final_decision": None,
         "clarification_question": None,

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from PIL import Image as PILImage
+
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
@@ -19,15 +21,57 @@ from reportlab.platypus import (
     PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
-from agents.common.schemas import IntakeResult, PolicyResult
+from agents.common.schemas import (
+    ArchitectureResult,
+    DeploymentResult,
+    IntakeResult,
+    PolicyResult,
+    ValidationResult,
+)
 
-VI_RED = colors.HexColor("#E60000")
+VI_RED = colors.HexColor("#ED1C2E")
+VI_YELLOW = colors.HexColor("#FFB81C")
 VI_DARK = colors.HexColor("#1A1A1A")
 GREY_LIGHT = colors.HexColor("#F4F4F4")
 GREY_BORDER = colors.HexColor("#CCCCCC")
 PASS_GREEN = colors.HexColor("#1B8A4D")
 WARN_AMBER = colors.HexColor("#E68A00")
 FAIL_RED = colors.HexColor("#C0202C")
+
+
+_LOGO_CACHE: Optional[str] = None
+
+
+def _get_vi_logo() -> Optional[str]:
+    """
+    Crops the Vi logo from image.png (red bg) and returns the path.
+    Cached so we only crop once per process.
+    """
+    global _LOGO_CACHE
+    if _LOGO_CACHE and os.path.exists(_LOGO_CACHE):
+        return _LOGO_CACHE
+
+    project_root = Path(__file__).resolve().parent.parent.parent
+    source = project_root / "image.png"
+    if not source.exists():
+        return None
+
+    cache_path = project_root / "agents" / "audit" / "_vi_logo_cropped.png"
+    try:
+        img = PILImage.open(source)
+        w, h = img.size
+        # Crop tight around the Vi+dot mark. Logo is roughly centered.
+        # Estimated bounding box for 1200x720 image.
+        left = int(w * 0.30)
+        right = int(w * 0.66)
+        top = int(h * 0.14)
+        bottom = int(h * 0.88)
+        cropped = img.crop((left, top, right, bottom))
+        cropped.save(cache_path)
+        _LOGO_CACHE = str(cache_path)
+        return _LOGO_CACHE
+    except Exception:
+        return None
 
 
 @dataclass
@@ -39,6 +83,9 @@ class AuditData:
     generated_at: datetime
     approval_signoff: Optional[str] = None
     deployment_status: Optional[str] = None
+    architecture: Optional[ArchitectureResult] = None
+    deployment: Optional[DeploymentResult] = None
+    validation: Optional[ValidationResult] = None
 
 
 def _header_footer(canvas, doc):
@@ -46,15 +93,41 @@ def _header_footer(canvas, doc):
 
     # Red header bar
     canvas.setFillColor(VI_RED)
-    canvas.rect(0, A4[1] - 1.5 * cm, A4[0], 1.5 * cm, fill=1, stroke=0)
+    canvas.rect(0, A4[1] - 1.7 * cm, A4[0], 1.7 * cm, fill=1, stroke=0)
+
+    # Vi logo from image.png (red bg blends with header)
+    logo_path = _get_vi_logo()
+    if logo_path:
+        logo_h = 1.3 * cm
+        logo_w = logo_h * 0.85  # cropped image is taller than wide
+        canvas.drawImage(
+            logo_path,
+            1.3 * cm,
+            A4[1] - 1.5 * cm,
+            width=logo_w,
+            height=logo_h,
+            mask=None,
+            preserveAspectRatio=True,
+        )
+        title_x = 1.3 * cm + logo_w + 0.4 * cm
+    else:
+        canvas.setFillColor(colors.white)
+        canvas.setFont("Helvetica-Bold", 16)
+        canvas.drawString(1.5 * cm, A4[1] - 1.1 * cm, "Vi")
+        title_x = 2.8 * cm
+
     canvas.setFillColor(colors.white)
-    canvas.setFont("Helvetica-Bold", 14)
-    canvas.drawString(1.5 * cm, A4[1] - 1.0 * cm, "Vi  |  Cloud Service Fulfillment")
+    canvas.setFont("Helvetica-Bold", 13)
+    canvas.drawString(title_x, A4[1] - 1.1 * cm, "Cloud Service Fulfillment")
     canvas.setFont("Helvetica", 9)
     canvas.drawRightString(
-        A4[0] - 1.5 * cm, A4[1] - 1.0 * cm,
+        A4[0] - 1.5 * cm, A4[1] - 1.1 * cm,
         "Agentic AI Platform - Audit Report",
     )
+
+    # Thin yellow accent line under header
+    canvas.setFillColor(VI_YELLOW)
+    canvas.rect(0, A4[1] - 1.75 * cm, A4[0], 0.08 * cm, fill=1, stroke=0)
 
     # Footer
     canvas.setFillColor(VI_DARK)
@@ -198,6 +271,71 @@ def _checks_table(checks) -> Table:
     return table
 
 
+def _validation_table(validation: ValidationResult) -> Table:
+    cell_style = ParagraphStyle(
+        name="ValCell",
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        textColor=VI_DARK,
+    )
+    header = ["#", "Site", "Overall", "Ping", "Throughput", "QoS", "Encryption"]
+    data = [header]
+    for i, sv in enumerate(validation.sites_detail, 1):
+        tests_by_name = {t.name: t for t in sv.tests}
+        data.append([
+            str(i),
+            Paragraph(sv.site_name, cell_style),
+            sv.overall.upper(),
+            Paragraph(
+                tests_by_name.get("ping").measured if "ping" in tests_by_name else "-",
+                cell_style,
+            ),
+            Paragraph(
+                tests_by_name.get("throughput").measured if "throughput" in tests_by_name else "-",
+                cell_style,
+            ),
+            Paragraph(
+                tests_by_name.get("qos").outcome.upper() if "qos" in tests_by_name else "-",
+                cell_style,
+            ),
+            Paragraph(
+                tests_by_name.get("encryption").outcome.upper() if "encryption" in tests_by_name else "-",
+                cell_style,
+            ),
+        ])
+
+    table = Table(
+        data,
+        colWidths=[0.7 * cm, 2.6 * cm, 1.6 * cm, 3.0 * cm, 4.0 * cm, 1.6 * cm, 2.5 * cm],
+        repeatRows=1,
+    )
+    style = TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), VI_RED),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 9),
+        ("FONT", (0, 1), (-1, -1), "Helvetica", 8),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 1), (0, -1), "CENTER"),
+        ("ALIGN", (2, 1), (2, -1), "CENTER"),
+        ("ALIGN", (5, 1), (6, -1), "CENTER"),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, GREY_BORDER),
+        ("BOX", (0, 0), (-1, -1), 0.4, GREY_BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ])
+    for i, sv in enumerate(validation.sites_detail, 1):
+        col_color = _status_color(sv.overall) if sv.overall != "skipped" else VI_DARK
+        style.add("TEXTCOLOR", (2, i), (2, i), col_color)
+        style.add("FONT", (2, i), (2, i), "Helvetica-Bold", 9)
+        if i % 2 == 0:
+            style.add("BACKGROUND", (0, i), (-1, i), GREY_LIGHT)
+    table.setStyle(style)
+    return table
+
+
 def _sites_table(intake: IntakeResult, policy: PolicyResult) -> Table:
     from agents.policy.rules import estimate_site_cost
     header = ["#", "City", "State", "Bandwidth (Mbps)", "Monthly Cost (Rs)"]
@@ -247,7 +385,7 @@ def generate_audit_pdf(data: AuditData, output_path: str) -> str:
     doc = SimpleDocTemplate(
         output_path,
         pagesize=A4,
-        topMargin=2.5 * cm,
+        topMargin=2.7 * cm,
         bottomMargin=2 * cm,
         leftMargin=1.5 * cm,
         rightMargin=1.5 * cm,
@@ -317,10 +455,40 @@ def generate_audit_pdf(data: AuditData, output_path: str) -> str:
 
     # ---- Sites Inventory ----
     if data.intake.sites:
+        story.append(PageBreak())
         story.append(Paragraph("Sites Inventory", section))
         story.append(_sites_table(data.intake, data.policy))
 
+    # ---- Validation Results ----
+    if data.validation:
+        story.append(PageBreak())
+        story.append(Paragraph("End-to-End Validation Results", section))
+
+        v = data.validation
+        summary_rows = [
+            ("Validation Status", v.status.upper().replace("_", " ")),
+            ("Test Mode", v.mode.upper()),
+            ("SLA Target Uptime", f"{v.sla_target_uptime_pct}%"),
+            ("Sites Tested", str(v.sites_tested)),
+            ("Sites Passed", str(v.sites_passed)),
+            ("Sites Borderline", str(v.sites_borderline)),
+            ("Sites Failed", str(v.sites_failed)),
+        ]
+        story.append(_kv_table(summary_rows))
+
+        if v.disclaimer:
+            story.append(Spacer(1, 0.3 * cm))
+            story.append(Paragraph(
+                f"<i>Note: {v.disclaimer}</i>",
+                body,
+            ))
+
+        if v.sites_detail:
+            story.append(Spacer(1, 0.3 * cm))
+            story.append(_validation_table(v))
+
     # ---- Approval Chain ----
+    story.append(PageBreak())
     story.append(Paragraph("Approval Chain", section))
     approval_rows = [
         ("Required Level", data.policy.approval_level_required.upper()),
@@ -355,9 +523,14 @@ def build_audit(
     customer_name: str = "Unnamed Customer",
     output_dir: str = "audits",
     approval_signoff: Optional[str] = None,
+    architecture: Optional[ArchitectureResult] = None,
+    deployment: Optional[DeploymentResult] = None,
+    validation: Optional[ValidationResult] = None,
+    workflow_id: Optional[str] = None,
 ) -> str:
     """Convenience entry point - returns generated PDF path."""
-    workflow_id = f"wf-{uuid.uuid4().hex[:12]}"
+    if not workflow_id:
+        workflow_id = f"wf-{uuid.uuid4().hex[:12]}"
     filename = f"{workflow_id}.pdf"
     output_path = os.path.join(output_dir, filename)
 
@@ -368,5 +541,8 @@ def build_audit(
         policy=policy,
         generated_at=datetime.now(timezone.utc),
         approval_signoff=approval_signoff,
+        architecture=architecture,
+        deployment=deployment,
+        validation=validation,
     )
     return generate_audit_pdf(data, output_path)
