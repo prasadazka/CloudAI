@@ -40,6 +40,135 @@ OverallStatus = Literal["approved", "approved_with_escalation", "rejected"]
 ApprovalLevel = Literal["auto", "manager", "director", "cfo", "ciso"]
 
 
+class CustomerProfile(BaseModel):
+    id: str
+    name: str
+    tier: Literal["Enterprise_Gold", "Enterprise_Silver", "SMB", "New", "Unknown"]
+    since: str = Field(description="ISO date of relationship start")
+    total_arr_inr: int = Field(default=0, ge=0)
+    industry: str = ""
+    primary_contact: str = ""
+
+
+class ExistingResource(BaseModel):
+    type: Literal["vpc", "transit_gateway", "vpn_connection", "subnet", "other"]
+    id: str
+    region: str
+    cidr: Optional[str] = None
+    notes: str = ""
+
+
+class ReuseRecommendation(BaseModel):
+    type: Literal["reuse", "skip_create", "expand", "co_locate", "info_only"]
+    resource_id: str
+    estimated_savings_inr_monthly: int = Field(default=0, ge=0)
+    reasoning: str
+
+
+Topology = Literal[
+    "hub_spoke_single_vpn",
+    "hub_spoke_dual_vpn",
+    "hub_spoke_dual_vpn_bgp",
+    "full_mesh_dual_vpn",
+]
+Complexity = Literal["low", "medium", "high"]
+
+
+class ArchitectureOption(BaseModel):
+    name: str = Field(description="Display name, e.g., 'Option A: Cost-Optimized'")
+    topology: Topology
+    cost_inr_monthly: int = Field(ge=0)
+    resilience_score: float = Field(ge=0.0, le=10.0)
+    complexity: Complexity
+    sla_uptime_pct: float = Field(ge=0.0, le=100.0)
+    tradeoffs: str
+    reasoning: str
+    recommended: bool = False
+
+
+class ArchitectureResult(BaseModel):
+    options: list[ArchitectureOption]
+    recommended_option_name: str
+    rationale: str = Field(description="Why this option fits customer + intake")
+    summary: str
+
+
+IaCStatus = Literal[
+    "validated",
+    "validation_failed",
+    "generation_failed",
+    "validation_skipped",
+]
+
+
+class TerraformArtifact(BaseModel):
+    path: str = Field(description="Relative path of generated file")
+    kind: Literal["tf", "tfvars", "yaml", "other"]
+    line_count: int = Field(ge=0)
+
+
+class IaCResult(BaseModel):
+    status: IaCStatus
+    workflow_dir: str = Field(description="Directory containing generated files")
+    artifacts: list[TerraformArtifact] = Field(default_factory=list)
+    resources_planned: int = Field(default=0, ge=0)
+    self_fix_attempts: int = Field(default=0, ge=0)
+    validation_output: str = ""
+    error: Optional[str] = None
+    diff_summary: str = Field(description="Human-readable summary of what's created")
+
+
+DeploymentMode = Literal["plan_only", "apply", "destroy"]
+DeploymentStatus = Literal[
+    "plan_succeeded",
+    "plan_failed",
+    "applied",
+    "applied_with_warnings",
+    "apply_failed",
+    "destroyed",
+    "destroy_failed",
+    "skipped_no_approval",
+    "skipped_no_terraform",
+]
+SiteDeploymentStatus = Literal[
+    "pending", "creating", "succeeded", "failed", "rolled_back"
+]
+
+
+class SiteDeployment(BaseModel):
+    site_name: str
+    status: SiteDeploymentStatus
+    duration_sec: float = Field(default=0.0, ge=0.0)
+    retries: int = Field(default=0, ge=0)
+    error: Optional[str] = None
+
+
+class DeploymentResult(BaseModel):
+    mode: DeploymentMode
+    status: DeploymentStatus
+    workflow_dir: str
+    sites_total: int = Field(default=0, ge=0)
+    sites_succeeded: int = Field(default=0, ge=0)
+    sites_failed: int = Field(default=0, ge=0)
+    sites_detail: list[SiteDeployment] = Field(default_factory=list)
+    total_duration_sec: float = Field(default=0.0, ge=0.0)
+    rollback_triggered: bool = False
+    terraform_output_tail: str = Field(default="", description="Last ~120 lines of terraform stdout")
+    approval_token: Optional[str] = None
+    summary: str = ""
+
+
+class DiscoveryResult(BaseModel):
+    customer_found: bool
+    customer_profile: Optional[CustomerProfile] = None
+    existing_resources: list[ExistingResource] = Field(default_factory=list)
+    active_vpn_count: int = 0
+    recommendations: list[ReuseRecommendation] = Field(default_factory=list)
+    recent_incidents_90d: int = 0
+    total_estimated_savings_inr_monthly: int = 0
+    summary: str = Field(description="One-line discovery summary")
+
+
 class PolicyCheck(BaseModel):
     name: str = Field(description="Check name, e.g., 'DOT Licensing'")
     status: CheckStatus

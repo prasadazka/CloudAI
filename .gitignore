@@ -76,4 +76,5 @@ temp/
 # Generated artifacts (PDFs, reports)
 # ============================================================
 agents/audits/
+iac_output/
 *.pdf
