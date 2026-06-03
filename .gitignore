@@ -54,6 +54,7 @@ node_modules/
 dist/
 build/
 .vercel
+next-env.d.ts
 
 # ============================================================
 # IDE / OS
@@ -73,9 +74,17 @@ temp/
 *.bak
 
 # ============================================================
-# Generated artifacts (PDFs, reports)
+# Generated artifacts (PDFs, reports, persisted workflow state)
 # ============================================================
 agents/audits/
 agents/audit/_vi_logo_cropped.png
+agents/iac_output/
 iac_output/
+audits/
 *.pdf
+*.wf
+
+# ============================================================
+# Editor / agent local settings
+# ============================================================
+.claude/

@@ -5,7 +5,7 @@ Per agents.md §6.
 Safe by default: requires explicit approval_token to perform apply.
 """
 
-from typing import Optional, TypedDict
+from typing import Callable, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -25,6 +25,7 @@ from agents.deployment.executor import (
     terraform_init,
     terraform_plan,
 )
+from agents.deployment.inventory import collect_infrastructure
 
 
 # Approval token format: caller must supply this exact value to actually apply.
@@ -38,24 +39,37 @@ class DeploymentState(TypedDict):
     approval_token: Optional[str]
     iac: Optional[IaCResult]
     result: Optional[DeploymentResult]
+    line_callback: Optional[Callable[[str], None]]
 
 
-def _build_sites_detail(stdout: str, mode: str) -> list[SiteDeployment]:
+def _build_sites_detail(
+    stdout: str, mode: str, exit_code: int = 0
+) -> list[SiteDeployment]:
+    """
+    Classify each site's outcome from terraform stdout.
+
+    Note: terraform reports every resource as "Creating..." then
+    "Creation complete". We can't reliably pair these per resource, so we
+    rely on the overall terraform exit code + presence of completion events.
+    """
     per_site = parse_per_site_status(stdout)
     out: list[SiteDeployment] = []
     for site_name, data in per_site.items():
         if mode == "plan_only":
             status = "pending"
-        elif data["created"] > 0 and data["in_progress"] == 0 and data["failed"] == 0:
-            status = "succeeded"
-        elif data["failed"] > 0:
+        elif data.get("failed", 0) > 0:
             status = "failed"
-        else:
+        elif exit_code == 0 and data.get("created", 0) > 0:
+            # terraform succeeded overall AND we saw creation events for this
+            # site -> the site's resources are up
+            status = "succeeded"
+        elif exit_code != 0 and data.get("created", 0) > 0:
+            # terraform failed overall but this site's resources got created
+            # before the failure -> mark created (will need teardown)
             status = "creating"
-        out.append(SiteDeployment(
-            site_name=site_name,
-            status=status,
-        ))
+        else:
+            status = "pending"
+        out.append(SiteDeployment(site_name=site_name, status=status))
     return out
 
 
@@ -130,8 +144,8 @@ def deploy_node(state: DeploymentState) -> DeploymentState:
         return state
 
     if mode == "apply":
-        apply = terraform_apply(workflow_dir)
-        sites_detail = _build_sites_detail(apply.stdout, mode)
+        apply = terraform_apply(workflow_dir, line_callback=state.get("line_callback"))
+        sites_detail = _build_sites_detail(apply.stdout, mode, apply.exit_code)
         succeeded = sum(1 for s in sites_detail if s.status == "succeeded")
         failed = sum(1 for s in sites_detail if s.status == "failed")
 
@@ -139,6 +153,58 @@ def deploy_node(state: DeploymentState) -> DeploymentState:
             status = "applied" if failed == 0 else "applied_with_warnings"
         else:
             status = "apply_failed"
+
+        # Post-apply: enumerate exactly what's now in AWS. Non-fatal on failure.
+        infra = None
+        if status in ("applied", "applied_with_warnings"):
+            try:
+                infra = collect_infrastructure(workflow_id=state.get("workflow_id"))
+            except Exception as e:  # noqa: BLE001
+                infra = None
+                # best-effort - we still want the deployment result back
+
+        # Auto-rollback: apply failed AND some resources got created -> destroy
+        # them so we don't leak orphans into AWS quota. Without this, every
+        # failed apply leaves IGWs/VPCs/IAM behind that block the next run.
+        rolled_back = False
+        rollback_notes = ""
+        if status == "apply_failed":
+            try:
+                cb = state.get("line_callback")
+                if cb:
+                    cb("ROLLBACK: apply failed - running terraform destroy to clean partial state")
+                rb = terraform_destroy(workflow_dir, line_callback=cb)
+                if rb.exit_code == 0:
+                    rolled_back = True
+                    rollback_notes = "auto-rollback succeeded - partial resources destroyed"
+                    if cb:
+                        cb("ROLLBACK: cleanup complete - AWS state restored")
+                else:
+                    rollback_notes = (
+                        f"auto-rollback failed (terraform destroy exit {rb.exit_code}) - "
+                        "manual cleanup likely required via scripts/nuke-videmo-aws.ps1"
+                    )
+                    if cb:
+                        cb(f"ROLLBACK FAILED: {rollback_notes}")
+            except Exception as e:  # noqa: BLE001
+                rollback_notes = f"auto-rollback errored: {type(e).__name__}: {e}"
+
+        # Mark per-site detail as rolled_back when rollback succeeded so the UI
+        # tells the truth (resources are gone, not still "creating").
+        if rolled_back:
+            sites_detail = [
+                SiteDeployment(site_name=s.site_name, status="rolled_back")
+                for s in sites_detail
+            ]
+            succeeded = 0
+            failed = 0
+
+        summary_text = (
+            f"Apply {'succeeded' if status == 'applied' else status}: "
+            f"{succeeded}/{len(sites_detail)} sites operational"
+        )
+        if rollback_notes:
+            summary_text += f" | {rollback_notes}"
 
         state["result"] = DeploymentResult(
             mode=mode,
@@ -151,16 +217,15 @@ def deploy_node(state: DeploymentState) -> DeploymentState:
             total_duration_sec=apply.duration_sec,
             terraform_output_tail=tail(apply.stdout + "\n" + apply.stderr),
             approval_token=approval,
-            summary=(
-                f"Apply {'succeeded' if status == 'applied' else status}: "
-                f"{succeeded}/{len(sites_detail)} sites operational"
-            ),
+            rollback_triggered=rolled_back,
+            summary=summary_text,
+            infrastructure=infra,
         )
         return state
 
     if mode == "destroy":
-        destroy = terraform_destroy(workflow_dir)
-        sites_detail = _build_sites_detail(destroy.stdout, mode)
+        destroy = terraform_destroy(workflow_dir, line_callback=state.get("line_callback"))
+        sites_detail = _build_sites_detail(destroy.stdout, mode, destroy.exit_code)
         status = "destroyed" if destroy.exit_code == 0 else "destroy_failed"
         state["result"] = DeploymentResult(
             mode=mode,
@@ -200,6 +265,7 @@ def run_deployment(
     mode: DeploymentMode = "plan_only",
     approval_token: Optional[str] = None,
     iac: Optional[IaCResult] = None,
+    line_callback: Optional[Callable[[str], None]] = None,
 ) -> DeploymentResult:
     app = build_deployment_graph()
     final = app.invoke({
@@ -209,5 +275,6 @@ def run_deployment(
         "approval_token": approval_token,
         "iac": iac,
         "result": None,
+        "line_callback": line_callback,
     })
     return final["result"]

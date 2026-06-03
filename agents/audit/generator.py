@@ -1,5 +1,5 @@
 """
-Audit PDF Generator for Vi Cloud Service Fulfillment.
+Audit PDF Generator for Sutradhar (by Azkashine).
 Pure Python, no LLM. Takes Intake + Policy results, produces compliance PDF.
 """
 
@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-
-from PIL import Image as PILImage
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -39,39 +37,55 @@ WARN_AMBER = colors.HexColor("#E68A00")
 FAIL_RED = colors.HexColor("#C0202C")
 
 
-_LOGO_CACHE: Optional[str] = None
-
-
-def _get_vi_logo() -> Optional[str]:
+def _draw_brand_mark(canvas, x_cm: float, y_cm: float, size_cm: float = 1.1) -> None:
     """
-    Crops the Vi logo from image.png (red bg) and returns the path.
-    Cached so we only crop once per process.
+    Draws the Sutradhar brand mark (white circle with red interwoven S) directly
+    on the canvas. No external image dependency - same motif as the favicon.
     """
-    global _LOGO_CACHE
-    if _LOGO_CACHE and os.path.exists(_LOGO_CACHE):
-        return _LOGO_CACHE
+    cx = x_cm + size_cm / 2
+    cy = y_cm + size_cm / 2
+    r = size_cm / 2
 
-    project_root = Path(__file__).resolve().parent.parent.parent
-    source = project_root / "image.png"
-    if not source.exists():
-        return None
+    canvas.saveState()
+    canvas.setFillColor(colors.white)
+    canvas.circle(cx * cm, cy * cm, r * cm, stroke=0, fill=1)
 
-    cache_path = project_root / "agents" / "audit" / "_vi_logo_cropped.png"
-    try:
-        img = PILImage.open(source)
-        w, h = img.size
-        # Crop tight around the Vi+dot mark. Logo is roughly centered.
-        # Estimated bounding box for 1200x720 image.
-        left = int(w * 0.30)
-        right = int(w * 0.66)
-        top = int(h * 0.14)
-        bottom = int(h * 0.88)
-        cropped = img.crop((left, top, right, bottom))
-        cropped.save(cache_path)
-        _LOGO_CACHE = str(cache_path)
-        return _LOGO_CACHE
-    except Exception:
-        return None
+    # Stylised S - two interlocking arcs in Vi red (kept for visual harmony
+    # with the header bar but represents Sutradhar's thread/orchestrator).
+    canvas.setStrokeColor(VI_RED)
+    canvas.setLineWidth(2.2)
+    canvas.setLineCap(1)  # round
+
+    # upper bowl
+    p1 = canvas.beginPath()
+    p1.moveTo((cx - 0.32 * size_cm) * cm, (cy + 0.32 * size_cm) * cm)
+    p1.curveTo(
+        (cx - 0.32 * size_cm) * cm, (cy + 0.52 * size_cm) * cm,
+        (cx + 0.05 * size_cm) * cm, (cy + 0.52 * size_cm) * cm,
+        (cx + 0.05 * size_cm) * cm, (cy + 0.32 * size_cm) * cm,
+    )
+    p1.curveTo(
+        (cx + 0.05 * size_cm) * cm, (cy + 0.10 * size_cm) * cm,
+        (cx - 0.32 * size_cm) * cm, (cy + 0.10 * size_cm) * cm,
+        (cx - 0.32 * size_cm) * cm, (cy - 0.10 * size_cm) * cm,
+    )
+    canvas.drawPath(p1, stroke=1, fill=0)
+
+    # lower bowl
+    p2 = canvas.beginPath()
+    p2.moveTo((cx - 0.32 * size_cm) * cm, (cy - 0.10 * size_cm) * cm)
+    p2.curveTo(
+        (cx - 0.32 * size_cm) * cm, (cy - 0.32 * size_cm) * cm,
+        (cx + 0.32 * size_cm) * cm, (cy - 0.32 * size_cm) * cm,
+        (cx + 0.32 * size_cm) * cm, (cy - 0.10 * size_cm) * cm,
+    )
+    canvas.drawPath(p2, stroke=1, fill=0)
+
+    # Accent dot = AI/orchestrator
+    canvas.setFillColor(VI_YELLOW)
+    canvas.circle((cx + 0.40 * size_cm) * cm, (cy + 0.40 * size_cm) * cm,
+                  0.06 * size_cm * cm, stroke=0, fill=1)
+    canvas.restoreState()
 
 
 @dataclass
@@ -91,38 +105,29 @@ class AuditData:
 def _header_footer(canvas, doc):
     canvas.saveState()
 
-    # Red header bar
+    # Red header bar (kept - visual signature)
     canvas.setFillColor(VI_RED)
     canvas.rect(0, A4[1] - 1.7 * cm, A4[0], 1.7 * cm, fill=1, stroke=0)
 
-    # Vi logo from image.png (red bg blends with header)
-    logo_path = _get_vi_logo()
-    if logo_path:
-        logo_h = 1.3 * cm
-        logo_w = logo_h * 0.85  # cropped image is taller than wide
-        canvas.drawImage(
-            logo_path,
-            1.3 * cm,
-            A4[1] - 1.5 * cm,
-            width=logo_w,
-            height=logo_h,
-            mask=None,
-            preserveAspectRatio=True,
-        )
-        title_x = 1.3 * cm + logo_w + 0.4 * cm
-    else:
-        canvas.setFillColor(colors.white)
-        canvas.setFont("Helvetica-Bold", 16)
-        canvas.drawString(1.5 * cm, A4[1] - 1.1 * cm, "Vi")
-        title_x = 2.8 * cm
+    # Sutradhar brand mark drawn inline (no image file needed).
+    # Logo top-left: x=1.3cm, y aligned with header bar
+    mark_size = 1.05  # cm
+    mark_x = 1.3
+    mark_y = (A4[1] / cm) - 1.45
+    _draw_brand_mark(canvas, mark_x, mark_y, mark_size)
 
+    # Wordmark
+    title_x = (mark_x + mark_size + 0.35) * cm
     canvas.setFillColor(colors.white)
-    canvas.setFont("Helvetica-Bold", 13)
-    canvas.drawString(title_x, A4[1] - 1.1 * cm, "Cloud Service Fulfillment")
+    canvas.setFont("Helvetica-Bold", 14)
+    canvas.drawString(title_x, A4[1] - 1.0 * cm, "Sutradhar")
+    canvas.setFont("Helvetica", 8.5)
+    canvas.drawString(title_x, A4[1] - 1.45 * cm, "Cloud Orchestration Platform")
+
     canvas.setFont("Helvetica", 9)
     canvas.drawRightString(
         A4[0] - 1.5 * cm, A4[1] - 1.1 * cm,
-        "Agentic AI Platform - Audit Report",
+        "Agentic AI - Audit Report",
     )
 
     # Thin yellow accent line under header
@@ -134,7 +139,7 @@ def _header_footer(canvas, doc):
     canvas.setFont("Helvetica", 8)
     canvas.drawString(
         1.5 * cm, 1.0 * cm,
-        f"Generated by Azkashine AI Platform - Page {doc.page}",
+        f"Sutradhar by Azkashine  ·  Page {doc.page}",
     )
     canvas.drawRightString(
         A4[0] - 1.5 * cm, 1.0 * cm,
@@ -336,6 +341,128 @@ def _validation_table(validation: ValidationResult) -> Table:
     return table
 
 
+def _infrastructure_tables(deployment: DeploymentResult) -> list:
+    """
+    Render two tables for the audit:
+      1. Hub + resource-type counts (key/value rows)
+      2. Per-site AWS IDs (VPC / EC2 / VPN / tunnel status)
+    Returns a list of flowables (tables interleaved with Paragraphs/Spacers).
+    """
+    flowables: list = []
+    infra = deployment.infrastructure
+    if not infra:
+        return flowables
+
+    cell_style = ParagraphStyle(
+        name="InfraCell", fontName="Helvetica", fontSize=7, leading=9, textColor=VI_DARK,
+    )
+    mono_style = ParagraphStyle(
+        name="InfraMono", fontName="Courier", fontSize=6.5, leading=8, textColor=VI_DARK,
+    )
+
+    # --- 1. Hub + counts (kv) ---
+    hub_rows = [("AWS Region", infra.region)]
+    if infra.transit_gateway_id:
+        hub_rows.append(("Transit Gateway", infra.transit_gateway_id))
+    if infra.central_vpc_id:
+        hub_rows.append(("Central VPC", f"{infra.central_vpc_id} ({infra.central_vpc_cidr or '—'})"))
+    hub_rows.append(("Total Resources", str(infra.total_resources)))
+    if infra.cost_per_hour_usd is not None:
+        inr_hr = int(infra.cost_per_hour_usd * 83)
+        hub_rows.append(
+            ("Hourly Burn Rate", f"~Rs {inr_hr}/hr (${infra.cost_per_hour_usd:.4f}/hr)")
+        )
+    flowables.append(_kv_table(hub_rows))
+
+    if infra.resource_counts:
+        flowables.append(Spacer(1, 0.3 * cm))
+        kinds = sorted(infra.resource_counts.keys())
+        # 3-col grid: kind | count | kind | count ...
+        rows: list[list] = [["Resource Type", "Count", "Resource Type", "Count"]]
+        for i in range(0, len(kinds), 2):
+            left_k = kinds[i]
+            left_v = str(infra.resource_counts[left_k])
+            if i + 1 < len(kinds):
+                right_k = kinds[i + 1]
+                right_v = str(infra.resource_counts[right_k])
+            else:
+                right_k, right_v = "", ""
+            rows.append([left_k, left_v, right_k, right_v])
+        rt = Table(rows, colWidths=[4.5 * cm, 1.8 * cm, 4.5 * cm, 1.8 * cm], repeatRows=1)
+        rt.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), VI_RED),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8),
+            ("FONT", (0, 1), (-1, -1), "Helvetica", 8),
+            ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+            ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, GREY_BORDER),
+            ("BOX", (0, 0), (-1, -1), 0.4, GREY_BORDER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        flowables.append(rt)
+
+    # --- 2. Per-site detail ---
+    if infra.sites:
+        flowables.append(Spacer(1, 0.4 * cm))
+        header = ["Site", "VPC ID / CIDR", "EC2 Instance", "Public IP", "VPN Connection", "T1", "T2"]
+        rows = [header]
+        for s in infra.sites:
+            vpc_cell = Paragraph(
+                f"{s.vpc_id or '—'}<br/><font color='#666666'>{s.vpc_cidr or ''}</font>",
+                mono_style,
+            )
+            ec2_cell = Paragraph(
+                f"{s.instance_id or '—'}<br/><font color='#666666'>{s.instance_type or ''}</font>",
+                mono_style,
+            )
+            t1 = (s.tunnel_1_status or "—").upper()
+            t2 = (s.tunnel_2_status or "—").upper()
+            rows.append([
+                Paragraph(s.site_name, cell_style),
+                vpc_cell,
+                ec2_cell,
+                Paragraph(s.public_ip or "—", mono_style),
+                Paragraph(s.vpn_connection_id or "—", mono_style),
+                t1,
+                t2,
+            ])
+
+        site_table = Table(
+            rows,
+            colWidths=[2.0 * cm, 3.6 * cm, 3.6 * cm, 2.4 * cm, 3.4 * cm, 0.9 * cm, 0.9 * cm],
+            repeatRows=1,
+        )
+        style = TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), VI_RED),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8),
+            ("FONT", (5, 1), (6, -1), "Helvetica-Bold", 8),
+            ("ALIGN", (5, 0), (6, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("INNERGRID", (0, 0), (-1, -1), 0.3, GREY_BORDER),
+            ("BOX", (0, 0), (-1, -1), 0.4, GREY_BORDER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ])
+        for i, s in enumerate(infra.sites, 1):
+            if i % 2 == 0:
+                style.add("BACKGROUND", (0, i), (-1, i), GREY_LIGHT)
+            t1_color = PASS_GREEN if (s.tunnel_1_status or "").upper() == "UP" else FAIL_RED
+            t2_color = PASS_GREEN if (s.tunnel_2_status or "").upper() == "UP" else FAIL_RED
+            style.add("TEXTCOLOR", (5, i), (5, i), t1_color)
+            style.add("TEXTCOLOR", (6, i), (6, i), t2_color)
+        site_table.setStyle(style)
+        flowables.append(site_table)
+
+    return flowables
+
+
 def _sites_table(intake: IntakeResult, policy: PolicyResult) -> Table:
     from agents.policy.rules import estimate_site_cost
     header = ["#", "City", "State", "Bandwidth (Mbps)", "Monthly Cost (Rs)"]
@@ -389,8 +516,8 @@ def generate_audit_pdf(data: AuditData, output_path: str) -> str:
         bottomMargin=2 * cm,
         leftMargin=1.5 * cm,
         rightMargin=1.5 * cm,
-        title=f"Vi Audit Report - {data.workflow_id}",
-        author="Azkashine Agentic AI Platform",
+        title=f"Sutradhar Audit Report - {data.workflow_id}",
+        author="Sutradhar by Azkashine",
     )
 
     styles = _styles()
@@ -447,7 +574,7 @@ def generate_audit_pdf(data: AuditData, output_path: str) -> str:
     story.append(Paragraph("Compliance Validation", section))
     story.append(Paragraph(
         f"Total of {len(data.policy.checks)} policy checks were executed automatically. "
-        f"Each check references the relevant Vi internal policy.",
+        f"Each check references the relevant telco internal policy code.",
         body,
     ))
     story.append(Spacer(1, 0.3 * cm))
@@ -458,6 +585,20 @@ def generate_audit_pdf(data: AuditData, output_path: str) -> str:
         story.append(PageBreak())
         story.append(Paragraph("Sites Inventory", section))
         story.append(_sites_table(data.intake, data.policy))
+
+    # ---- Provisioned Infrastructure (post-apply boto3 snapshot) ----
+    if data.deployment and data.deployment.infrastructure:
+        story.append(PageBreak())
+        story.append(Paragraph("Provisioned AWS Infrastructure", section))
+        story.append(Paragraph(
+            "Live inventory pulled from AWS after terraform apply completed. "
+            "Use these resource IDs for audit, billing reconciliation, and "
+            "post-incident forensics.",
+            body,
+        ))
+        story.append(Spacer(1, 0.3 * cm))
+        for flow in _infrastructure_tables(data.deployment):
+            story.append(flow)
 
     # ---- Validation Results ----
     if data.validation:
@@ -504,10 +645,11 @@ def generate_audit_pdf(data: AuditData, output_path: str) -> str:
     # ---- Signature ----
     story.append(Paragraph("Signatures and Attestation", section))
     sig_rows = [
-        ("Platform Version", "Azkashine Agentic AI v1.0"),
+        ("Platform", "Sutradhar v1.0 — Cloud Orchestration"),
+        ("Vendor", "Azkashine"),
         ("AI Attestation",
          "All checks executed by deterministic policy engine; "
-         "extraction by LLM with structured-output validation"),
+         "intake extraction by LLM with structured-output validation"),
         ("Cryptographic Reference", f"workflow:{data.workflow_id}"),
         ("Generated At", data.generated_at.strftime("%Y-%m-%d %H:%M:%S %Z")),
     ]

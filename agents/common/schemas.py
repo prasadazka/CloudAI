@@ -135,12 +135,41 @@ SiteDeploymentStatus = Literal[
 ]
 
 
+class SiteInfrastructure(BaseModel):
+    """Per-site AWS resources actually created (populated post-apply via boto3)."""
+    site_name: str
+    vpc_id: Optional[str] = None
+    vpc_cidr: Optional[str] = None
+    subnet_id: Optional[str] = None
+    instance_id: Optional[str] = None
+    instance_type: Optional[str] = None
+    public_ip: Optional[str] = None
+    private_ip: Optional[str] = None
+    customer_gateway_id: Optional[str] = None
+    vpn_connection_id: Optional[str] = None
+    tunnel_1_status: Optional[str] = None
+    tunnel_2_status: Optional[str] = None
+
+
 class SiteDeployment(BaseModel):
     site_name: str
     status: SiteDeploymentStatus
     duration_sec: float = Field(default=0.0, ge=0.0)
     retries: int = Field(default=0, ge=0)
     error: Optional[str] = None
+
+
+class InfrastructureSummary(BaseModel):
+    """Aggregate AWS inventory created for the workflow."""
+    region: str = "ap-south-1"
+    transit_gateway_id: Optional[str] = None
+    central_vpc_id: Optional[str] = None
+    central_vpc_cidr: Optional[str] = None
+    resource_counts: dict[str, int] = Field(default_factory=dict)
+    total_resources: int = 0
+    sites: list[SiteInfrastructure] = Field(default_factory=list)
+    cost_per_hour_usd: Optional[float] = None
+    notes: list[str] = Field(default_factory=list)
 
 
 class DeploymentResult(BaseModel):
@@ -156,6 +185,7 @@ class DeploymentResult(BaseModel):
     terraform_output_tail: str = Field(default="", description="Last ~120 lines of terraform stdout")
     approval_token: Optional[str] = None
     summary: str = ""
+    infrastructure: Optional[InfrastructureSummary] = None
 
 
 TestOutcome = Literal["pass", "fail", "borderline", "skipped"]

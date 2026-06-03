@@ -170,6 +170,7 @@ def render_site_module_block(
   state              = "{state or 'Unknown'}"
   vpc_cidr           = "10.{index}.0.0/16"
   subnet_cidr        = "10.{index}.1.0/24"
+  central_cidr       = "10.0.0.0/16"
   transit_gateway_id = aws_ec2_transit_gateway.main.id
   customer_bgp_asn   = {65000 + index}
 }}

@@ -9,10 +9,77 @@ echo "===== Edge bootstrap started at $(date) ====="
 export DEBIAN_FRONTEND=noninteractive
 SITE_NAME="${site_name}"
 REGION="${aws_region}"
+SITE_CIDR="${site_cidr}"
+CENTRAL_CIDR="${central_cidr}"
 
-# Install packages
-apt-get update -y -qq
-apt-get install -y -qq strongswan awscli xmlstarlet jq curl
+# Install packages (separate apt-get update from install so we can see which fails)
+# Note: we deliberately do NOT install 'awscli' from apt - Ubuntu ships v1 which
+# has IMDSv2 token-handling regressions. We fetch v2 from AWS below.
+echo "==> apt-get update"
+apt-get update -y -qq || { echo "FATAL: apt-get update failed"; exit 1; }
+echo "==> apt-get install strongswan xmlstarlet jq curl unzip"
+apt-get install -y -qq strongswan xmlstarlet jq curl unzip || {
+  echo "FATAL: apt-get install failed. Last lines of dpkg log:"
+  tail -40 /var/log/dpkg.log 2>/dev/null || true
+  exit 1
+}
+
+# Install AWS CLI v2 from official installer. v1 (from apt) has known IMDSv2
+# token-caching bugs that silently break credential fetch on newer EC2 AMIs.
+if ! command -v aws >/dev/null 2>&1 || ! aws --version 2>&1 | grep -q "aws-cli/2"; then
+  echo "==> Installing AWS CLI v2 (apt's awscli is v1 and unreliable on IMDSv2)"
+  TMPDIR=$(mktemp -d)
+  cd "$TMPDIR"
+  if curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"; then
+    unzip -qq awscliv2.zip
+    ./aws/install --update >/dev/null 2>&1 || ./aws/install >/dev/null 2>&1 || {
+      echo "WARN: aws v2 installer failed; falling back to apt awscli v1"
+      apt-get install -y -qq awscli || echo "FATAL: no AWS CLI available"
+    }
+  else
+    echo "WARN: could not download awscli v2 (no internet?); falling back to apt awscli v1"
+    apt-get install -y -qq awscli || echo "FATAL: no AWS CLI available"
+  fi
+  cd - >/dev/null
+  rm -rf "$TMPDIR"
+fi
+
+# Verify critical tools landed where we expect them
+for tool in aws xmlstarlet ipsec; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "FATAL: '$tool' not found on PATH after install"
+    exit 1
+  fi
+done
+echo "==> Installed: $(aws --version 2>&1 | head -1), xmlstarlet $(xmlstarlet --version 2>&1 | head -1)"
+
+# Ensure amazon-ssm-agent is installed and running. Canonical Ubuntu AMIs
+# usually ship it pre-installed via snap, but we have seen builds (e.g.
+# 2026-06-02) where it's absent, leaving validation unable to reach the EC2.
+# Install + enable explicitly so behaviour is independent of AMI revision.
+echo "==> Ensuring amazon-ssm-agent is installed and running"
+if ! systemctl is-enabled --quiet snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null \
+   && ! systemctl is-enabled --quiet amazon-ssm-agent.service 2>/dev/null; then
+  echo "  amazon-ssm-agent service not found - installing via snap"
+  snap install amazon-ssm-agent --classic || {
+    echo "WARN: snap install amazon-ssm-agent failed - SSM-based validation may fail later"
+  }
+fi
+# Enable + start (idempotent). Try snap name first, then native systemd unit.
+systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null \
+  || systemctl enable --now amazon-ssm-agent.service 2>/dev/null \
+  || echo "WARN: could not enable amazon-ssm-agent.service - SSM commands may not work"
+# Tiny wait then sanity check
+sleep 5
+if systemctl is-active --quiet snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null \
+   || systemctl is-active --quiet amazon-ssm-agent.service 2>/dev/null; then
+  echo "  amazon-ssm-agent is running"
+else
+  echo "WARN: amazon-ssm-agent is NOT running. Recent logs:"
+  journalctl -u snap.amazon-ssm-agent.amazon-ssm-agent.service --no-pager -n 20 2>/dev/null \
+    || journalctl -u amazon-ssm-agent.service --no-pager -n 20 2>/dev/null \
+    || echo "  (no journalctl output)"
+fi
 
 # Enable IP forwarding
 sysctl -w net.ipv4.ip_forward=1
@@ -28,31 +95,94 @@ get_token() {
 echo "==> Waiting for EIP attachment..."
 sleep 30
 TOKEN=$(get_token)
+if [ -z "$TOKEN" ]; then
+  echo "FATAL: could not get IMDSv2 token - IMDS unreachable"
+  exit 1
+fi
 MY_PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
   http://169.254.169.254/latest/meta-data/public-ipv4)
 echo "Public IP (EIP): $MY_PUBLIC_IP"
+
+# Sanity-check IAM credentials BEFORE the long VPN poll, so we fail fast and
+# loudly when the instance profile hasn't propagated yet instead of silently
+# looping for 20 minutes on a permission error.
+echo "==> Verifying IAM credentials (sts:GetCallerIdentity)"
+IAM_OK=""
+AWS_DIAG_LOG=/var/log/edge-bootstrap-aws.log
+: > $AWS_DIAG_LOG
+for i in $(seq 1 12); do
+  if aws sts get-caller-identity --region "$REGION" >>$AWS_DIAG_LOG 2>&1; then
+    IAM_OK=1
+    echo "  IAM ready after $((i*5))s"
+    break
+  fi
+  echo "  attempt $i/12 - IAM not propagated yet (sleeping 5s)"
+  sleep 5
+done
+if [ -z "$IAM_OK" ]; then
+  echo "FATAL: IAM instance profile never became usable. Last sts errors:"
+  tail -20 $AWS_DIAG_LOG
+  exit 1
+fi
 
 # Wait for VPN connection to be created by Terraform
 VPN_NAME="vi-demo-site-$SITE_NAME-vpn"
 echo "==> Waiting for VPN connection [$VPN_NAME]..."
 VPN_ID=""
+LAST_ERR=""
 for i in $(seq 1 80); do
+  # Capture stderr so a real error (vs "no rows yet") is visible in the log.
+  # tee both into the AWS diag log AND a per-iteration buffer.
+  ITER_ERR=$(mktemp)
   VPN_ID=$(aws ec2 describe-vpn-connections \
     --filters "Name=tag:Name,Values=$VPN_NAME" "Name=state,Values=available" \
     --region "$REGION" \
     --query 'VpnConnections[0].VpnConnectionId' \
-    --output text 2>/dev/null || echo "")
+    --output text 2>"$ITER_ERR" || echo "")
+  if [ -s "$ITER_ERR" ]; then
+    LAST_ERR=$(cat "$ITER_ERR")
+    cat "$ITER_ERR" >> $AWS_DIAG_LOG
+  fi
+  rm -f "$ITER_ERR"
   if [ -n "$VPN_ID" ] && [ "$VPN_ID" != "None" ]; then
-    echo "Found VPN: $VPN_ID"
+    echo "Found VPN: $VPN_ID (after $((i*15))s)"
     break
   fi
-  echo "  attempt $i/80 - VPN not yet available, sleeping 15s"
+  # Every 5 iterations, print last error so the cause is visible in console
+  if [ $((i % 5)) -eq 0 ] && [ -n "$LAST_ERR" ]; then
+    echo "  attempt $i/80 - VPN not yet available. Last aws-cli stderr:"
+    echo "    $LAST_ERR"
+  else
+    echo "  attempt $i/80 - VPN not yet available, sleeping 15s"
+  fi
   sleep 15
 done
 
 if [ -z "$VPN_ID" ] || [ "$VPN_ID" = "None" ]; then
+  echo "================================================================"
   echo "ERROR: VPN connection not found after 20 minutes"
-  exit 1
+  echo "================================================================"
+  echo "Last aws-cli stderr seen during polling:"
+  echo "$LAST_ERR"
+  echo "Full diag log at $AWS_DIAG_LOG (tail):"
+  tail -30 $AWS_DIAG_LOG
+  echo "================================================================"
+  # Drop a sentinel that automation/operators can grep for. We deliberately
+  # do NOT exit-1 here because that kills cloud-init's final stage and the
+  # EC2 becomes a black box. By exiting 0, ssm-agent + sshd stay healthy,
+  # IMDS still works, and an operator (or our validator agent) can SSM in
+  # to diagnose. The validation phase will report this site as 'borderline'
+  # via the missing IPsec status check.
+  mkdir -p /var/lib/vi-demo
+  cat > /var/lib/vi-demo/bootstrap.failed <<EOF
+reason=vpn_poll_timeout
+site=$SITE_NAME
+vpn_name=$VPN_NAME
+last_aws_cli_error=$LAST_ERR
+elapsed_seconds=1200
+EOF
+  echo "Wrote /var/lib/vi-demo/bootstrap.failed - exiting cleanly so SSM stays up"
+  exit 0
 fi
 
 # Fetch VPN configuration XML
@@ -89,11 +219,16 @@ conn %default
     authby=secret
     type=tunnel
     auto=start
-    leftsubnet=0.0.0.0/0
-    rightsubnet=0.0.0.0/0
     dpdaction=restart
     dpddelay=10s
     dpdtimeout=30s
+    # leftsubnet = this site's CIDR (e.g. 10.1.0.0/16)
+    # rightsubnet = ALL overlay VPCs (central + peer sites) so site-to-site
+    # traffic via TGW gets encrypted. SSM/management uses public AWS IPs
+    # (not 10.x) so it stays on IGW. This is the demo's "real SD-WAN" path:
+    # Pune EC2 -> tunnel -> AWS VGW -> TGW -> peer VGW -> Bangalore EC2.
+    leftsubnet=$SITE_CIDR
+    rightsubnet=10.0.0.0/8
 
 conn aws-tunnel-1
     left=%defaultroute
@@ -101,7 +236,15 @@ conn aws-tunnel-1
     right=$T1_OUTSIDE
     rightid=$T1_OUTSIDE
 
+# Only tunnel-1 is auto-started. Tunnel-2 is kept available as a passive
+# spare ("auto=add" means strongSwan loads the config but does not initiate).
+# Reason: AWS provides two tunnels for HA, but without BGP both tunnels
+# install identical xfrm policies and AWS-side traffic returning via the
+# non-active tunnel is dropped. For the demo we accept single-tunnel
+# operation - the AWS VPN connection itself still shows UP/UP because both
+# IKE SAs are negotiated; only one carries data plane.
 conn aws-tunnel-2
+    auto=add
     left=%defaultroute
     leftid=$MY_PUBLIC_IP
     right=$T2_OUTSIDE

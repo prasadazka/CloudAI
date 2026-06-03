@@ -49,3 +49,22 @@ variable "customer_bgp_asn" {
   description = "BGP ASN for the customer side (must be unique per site)"
   type        = number
 }
+
+variable "central_cidr" {
+  description = "CIDR of the central VPC reachable over IPsec"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "edge_ami_id" {
+  description = <<-EOT
+    Pinned AMI ID for the SD-WAN edge EC2. Defaults to a tested Canonical
+    Ubuntu 22.04 LTS AMI in ap-south-1 (2026-05-21 build). Pass null to
+    auto-resolve the most_recent Canonical image - NOT recommended for
+    demos since Canonical pushes new images daily and any of them can
+    break the bootstrap (broken-AMI incident: ami-040e95ba14632401d /
+    2026-06-02 shipped with awscli/ssm-agent regressions).
+  EOT
+  type        = string
+  default     = "ami-07b301a23def3266d"
+}

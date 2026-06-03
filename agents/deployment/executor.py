@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal, Optional
 
 
 # Common Windows install locations to fall back to when not on PATH
@@ -44,8 +44,15 @@ class CommandResult:
 
 
 def _run(
-    cmd: list[str], cwd: str, timeout_sec: int = 900
+    cmd: list[str],
+    cwd: str,
+    timeout_sec: int = 900,
+    line_callback: Optional[Callable[[str], None]] = None,
 ) -> CommandResult:
+    """
+    Run a command. If line_callback is provided, stream stdout/stderr
+    line-by-line to it (real-time progress). Otherwise capture all.
+    """
     # If first arg is "terraform", swap for resolved binary path
     if cmd and cmd[0] == "terraform":
         binpath = terraform_binary()
@@ -56,23 +63,66 @@ def _run(
     env["TF_IN_AUTOMATION"] = "1"
     env.setdefault("TF_INPUT", "0")
     start = time.time()
+
+    if line_callback is None:
+        # Simple blocking capture mode
+        try:
+            p = subprocess.run(
+                cmd, cwd=cwd, capture_output=True, text=True,
+                timeout=timeout_sec, env=env,
+            )
+            return CommandResult(
+                exit_code=p.returncode,
+                duration_sec=time.time() - start,
+                stdout=p.stdout or "",
+                stderr=p.stderr or "",
+            )
+        except subprocess.TimeoutExpired as e:
+            return CommandResult(
+                exit_code=-1,
+                duration_sec=time.time() - start,
+                stdout=e.stdout.decode() if e.stdout else "",
+                stderr=f"TIMEOUT after {timeout_sec}s",
+            )
+
+    # Streaming mode — merge stderr into stdout and forward each line
+    stdout_lines: list[str] = []
     try:
-        p = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True,
-            timeout=timeout_sec, env=env,
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, universal_newlines=True,
         )
+        deadline = start + timeout_sec
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            stdout_lines.append(line)
+            try:
+                line_callback(line)
+            except Exception:
+                pass
+            if time.time() > deadline:
+                proc.kill()
+                return CommandResult(
+                    exit_code=-1,
+                    duration_sec=time.time() - start,
+                    stdout="\n".join(stdout_lines),
+                    stderr=f"TIMEOUT after {timeout_sec}s",
+                )
+        proc.wait()
         return CommandResult(
-            exit_code=p.returncode,
+            exit_code=proc.returncode,
             duration_sec=time.time() - start,
-            stdout=p.stdout or "",
-            stderr=p.stderr or "",
+            stdout="\n".join(stdout_lines),
+            stderr="",
         )
-    except subprocess.TimeoutExpired as e:
+    except Exception as e:
         return CommandResult(
             exit_code=-1,
             duration_sec=time.time() - start,
-            stdout=e.stdout.decode() if e.stdout else "",
-            stderr=f"TIMEOUT after {timeout_sec}s",
+            stdout="\n".join(stdout_lines),
+            stderr=f"{type(e).__name__}: {e}",
         )
 
 
@@ -90,21 +140,32 @@ def terraform_plan(workflow_dir: str) -> CommandResult:
     )
 
 
-def terraform_apply(workflow_dir: str, parallelism: int = 5) -> CommandResult:
+def terraform_apply(
+    workflow_dir: str,
+    parallelism: int = 5,
+    line_callback: Optional[Callable[[str], None]] = None,
+) -> CommandResult:
     return _run(
         [
             "terraform", "apply",
             "-no-color", "-input=false", "-auto-approve",
             f"-parallelism={parallelism}",
         ],
-        cwd=workflow_dir, timeout_sec=2400,
+        cwd=workflow_dir,
+        timeout_sec=2400,
+        line_callback=line_callback,
     )
 
 
-def terraform_destroy(workflow_dir: str) -> CommandResult:
+def terraform_destroy(
+    workflow_dir: str,
+    line_callback: Optional[Callable[[str], None]] = None,
+) -> CommandResult:
     return _run(
         ["terraform", "destroy", "-no-color", "-input=false", "-auto-approve"],
-        cwd=workflow_dir, timeout_sec=2400,
+        cwd=workflow_dir,
+        timeout_sec=2400,
+        line_callback=line_callback,
     )
 
 

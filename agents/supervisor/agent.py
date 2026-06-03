@@ -291,6 +291,10 @@ def _after_architecture(state: SupervisorState) -> str:
 def _after_iac(state: SupervisorState) -> str:
     if state.get("error"):
         return "audit"
+    # HITL: in plan_only mode, stop here and wait for human approval.
+    # Deployment / Validation / Audit are not legitimate before approval.
+    if state.get("deployment_mode") == "plan_only":
+        return "end"
     return "deployment"
 
 
@@ -348,7 +352,11 @@ def build_supervisor_graph():
     graph.add_conditional_edges(
         "run_iac",
         _after_iac,
-        {"deployment": "run_deployment", "audit": "run_audit", "end": END},
+        {
+            "deployment": "run_deployment",
+            "audit": "run_audit",
+            "end": END,
+        },
     )
     graph.add_conditional_edges(
         "run_deployment",

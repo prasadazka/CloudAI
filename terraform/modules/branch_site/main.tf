@@ -1,3 +1,5 @@
+# Fallback only - used when var.edge_ami_id is null. We do NOT pick it for
+# production demos because Canonical pushes new images daily; see variable doc.
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"]
@@ -16,6 +18,10 @@ data "aws_ami" "ubuntu" {
     name   = "architecture"
     values = ["x86_64"]
   }
+}
+
+locals {
+  resolved_edge_ami = var.edge_ami_id != null ? var.edge_ami_id : data.aws_ami.ubuntu.id
 }
 
 data "aws_region" "current" {}
@@ -98,6 +104,14 @@ resource "aws_security_group" "site_edge" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "ICMP from sibling site VPCs + central (validates SD-WAN reach)"
+    from_port   = -1
+    to_port     = -1
+    protocol    = "icmp"
+    cidr_blocks = ["10.0.0.0/8"]
+  }
+
   egress {
     description = "All outbound"
     from_port   = 0
@@ -155,7 +169,7 @@ resource "aws_iam_instance_profile" "edge_ssm" {
 }
 
 resource "aws_instance" "edge" {
-  ami                         = data.aws_ami.ubuntu.id
+  ami                         = local.resolved_edge_ami
   instance_type               = var.instance_type
   subnet_id                   = aws_subnet.site.id
   vpc_security_group_ids      = [aws_security_group.site_edge.id]
@@ -164,10 +178,23 @@ resource "aws_instance" "edge" {
   associate_public_ip_address = true
 
   user_data = templatefile("${path.module}/edge-bootstrap.sh.tftpl", {
-    site_name  = var.site_name
-    aws_region = data.aws_region.current.name
+    site_name    = var.site_name
+    aws_region   = data.aws_region.current.name
+    site_cidr    = var.vpc_cidr
+    central_cidr = var.central_cidr
   })
   user_data_replace_on_change = true
+
+  # Make sure the IAM role's policies are fully attached BEFORE the EC2 boots.
+  # `iam_instance_profile` only creates an implicit dep on the profile - not on
+  # the role's attached policies. Without these explicit deps Terraform can race
+  # the EC2 launch against AWS IAM propagation (typically 1-10 min), causing the
+  # bootstrap's `aws sts get-caller-identity` / describe-vpn-connections calls
+  # to 401 silently.
+  depends_on = [
+    aws_iam_role_policy_attachment.edge_ssm,
+    aws_iam_role_policy.edge_vpn_read,
+  ]
 
   tags = {
     Name = "vi-demo-site-${var.site_name}-edge"

@@ -129,10 +129,24 @@ def _encryption_test(profile: dict) -> SiteTest:
 
 
 def _aggregate_outcome(tests: list[SiteTest]) -> str:
-    outcomes = {t.outcome for t in tests}
-    if "fail" in outcomes:
+    """
+    A site's connectivity is determined by ping + throughput + encryption.
+    QoS is a feature, not a connectivity test — its failure does NOT mean
+    the site is down. Architecturally-known QoS limits (e.g. single-VPN
+    topology can't preserve DSCP) should not flip the whole site to failed.
+    """
+    CRITICAL = {"ping", "throughput", "encryption"}
+    critical_outcomes = {t.outcome for t in tests if t.name in CRITICAL}
+    feature_outcomes = {t.outcome for t in tests if t.name not in CRITICAL}
+
+    if "fail" in critical_outcomes:
         return "fail"
-    if "borderline" in outcomes:
+    if "borderline" in critical_outcomes:
+        return "borderline"
+    if "fail" in feature_outcomes:
+        # Connectivity good, but a feature (QoS) is not delivered.
+        # Borderline so the user sees something needs attention without
+        # concluding the deployment is broken.
         return "borderline"
     return "pass"
 

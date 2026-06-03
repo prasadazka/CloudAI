@@ -57,6 +57,37 @@ class TraceResponse(BaseModel):
     finished: bool
 
 
+class SiteOverride(BaseModel):
+    city: str
+    bandwidth_mbps: Optional[int] = Field(default=None, ge=10, le=10000)
+
+
+class WorkflowOverrides(BaseModel):
+    sites: Optional[list[SiteOverride]] = None
+    connectivity_type: Optional[str] = None
+    compliance_tier: Optional[str] = None
+    qos_apps: Optional[list[str]] = None
+
+
+class ApproveDeployRequest(BaseModel):
+    approval_token: str = Field(min_length=1, description="NOC approval token")
+    mode: str = Field(
+        default="apply",
+        description="apply | destroy",
+    )
+    overrides: Optional[WorkflowOverrides] = Field(
+        default=None,
+        description="User edits to intake values before apply",
+    )
+
+
+class ApproveDeployResponse(BaseModel):
+    workflow_id: str
+    status: str
+    mode: str
+    message: str
+
+
 class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None

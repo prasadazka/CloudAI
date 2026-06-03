@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --vi-red: #ED1C2E;
+  --vi-red-dark: #C8121F;
+  --vi-yellow: #FFB81C;
+  --vi-black: #1A1A1A;
+}
+
+html, body { height: 100%; }
+body {
+  color: rgb(24 24 27);
+  background: rgb(250 250 250);
+  font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Focus ring - subtle but accessible */
+*:focus-visible {
+  outline: 2px solid var(--vi-red);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Selection - on-brand */
+::selection {
+  background: var(--vi-red);
+  color: #fff;
+}
+
+/* Scrollbar - thin, neutral */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: rgb(212 212 216);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgb(161 161 170); }
