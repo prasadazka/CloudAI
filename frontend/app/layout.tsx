@@ -12,9 +12,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Sutradhar — Cloud Orchestration Platform",
+  title: "Cloud Siddhi — Agentic AI Cloud Orchestration",
   description:
-    "Agentic AI orchestration for enterprise SD-WAN, cloud onboarding and compliance — Sutradhar (the orchestrator).",
+    "Cloud Siddhi turns natural-language service requests into compliant, audited AWS deployments. Agentic AI for enterprise SD-WAN and cloud onboarding, by Azkashine.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -27,7 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </main>
         <footer className="border-t border-zinc-200 bg-white py-4">
           <div className="mx-auto flex max-w-[1400px] flex-wrap items-center justify-between gap-3 px-4 text-xs text-zinc-500 sm:px-6 lg:px-8">
-            <span>Sutradhar · an Azkashine product · Agentic AI Cloud Orchestration</span>
+            <span>Cloud Siddhi · an Azkashine product</span>
             <span>Confidential — internal use only</span>
           </div>
         </footer>

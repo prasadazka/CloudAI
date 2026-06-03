@@ -56,7 +56,7 @@ export default function HomePage() {
         </h1>
 
         <p className="mt-4 max-w-2xl text-base leading-relaxed text-zinc-600 sm:mt-5 sm:text-lg">
-          Sutradhar converts natural-language service requests into compliant,
+          Cloud Siddhi converts natural-language service requests into compliant,
           audited AWS deployments. Nine specialist agents enforce policy,
           render hardened Terraform, apply under human approval, and emit a
           board-ready compliance report — collapsing the six-week enterprise

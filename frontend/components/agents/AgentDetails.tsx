@@ -683,7 +683,7 @@ export function AgentDetails({ agent, full }: Props) {
     return (
       <div className="text-xs text-zinc-600">
         Compliance PDF generated. Use the <strong>Download Audit PDF</strong> button
-        on the right to retrieve the Sutradhar audit report.
+        on the right to retrieve the Cloud Siddhi audit report.
       </div>
     );
   }

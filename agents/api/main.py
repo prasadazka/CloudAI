@@ -1,5 +1,5 @@
 """
-Sutradhar (by Azkashine) - HTTP API.
+Cloud Siddhi (by Azkashine) - HTTP API.
 Agentic AI cloud orchestration platform. Wraps the supervisor in async
 FastAPI endpoints with background execution.
 """
@@ -64,7 +64,7 @@ def _rehydrate_state(state: dict) -> dict:
 
 
 app = FastAPI(
-    title="Sutradhar — Cloud Orchestration API",
+    title="Cloud Siddhi — Agentic Orchestration API",
     description=(
         "Agentic AI cloud orchestration platform by Azkashine. HTTP layer "
         "for the multi-agent SD-WAN onboarding pipeline. Wraps Supervisor "

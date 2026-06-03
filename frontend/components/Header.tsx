@@ -8,7 +8,7 @@ export function Header() {
           <Link
             href="/"
             className="flex items-center gap-2.5 text-white sm:gap-3"
-            aria-label="Sutradhar home"
+            aria-label="Cloud Siddhi home"
           >
             {/* Inline brand mark - the same motif as the favicon */}
             <svg
@@ -34,10 +34,10 @@ export function Header() {
               <circle cx="48" cy="18" r="3.5" fill="#FFB81C" />
             </svg>
             <span className="text-base font-semibold tracking-tight sm:text-lg">
-              Sutradhar
+              Cloud Siddhi
             </span>
             <span className="hidden text-xs font-medium text-white/80 sm:inline">
-              · Cloud Orchestration
+              · Agentic Orchestration
             </span>
           </Link>
 

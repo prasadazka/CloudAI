@@ -1,5 +1,5 @@
 """
-Audit PDF Generator for Sutradhar (by Azkashine).
+Audit PDF Generator for Cloud Siddhi (by Azkashine).
 Pure Python, no LLM. Takes Intake + Policy results, produces compliance PDF.
 """
 
@@ -39,7 +39,7 @@ FAIL_RED = colors.HexColor("#C0202C")
 
 def _draw_brand_mark(canvas, x_cm: float, y_cm: float, size_cm: float = 1.1) -> None:
     """
-    Draws the Sutradhar brand mark (white circle with red interwoven S) directly
+    Draws the Cloud Siddhi brand mark (white circle with red interwoven S) directly
     on the canvas. No external image dependency - same motif as the favicon.
     """
     cx = x_cm + size_cm / 2
@@ -51,7 +51,7 @@ def _draw_brand_mark(canvas, x_cm: float, y_cm: float, size_cm: float = 1.1) -> 
     canvas.circle(cx * cm, cy * cm, r * cm, stroke=0, fill=1)
 
     # Stylised S - two interlocking arcs in Vi red (kept for visual harmony
-    # with the header bar but represents Sutradhar's thread/orchestrator).
+    # with the header bar but represents Cloud Siddhi's accomplishment mark).
     canvas.setStrokeColor(VI_RED)
     canvas.setLineWidth(2.2)
     canvas.setLineCap(1)  # round
@@ -109,7 +109,7 @@ def _header_footer(canvas, doc):
     canvas.setFillColor(VI_RED)
     canvas.rect(0, A4[1] - 1.7 * cm, A4[0], 1.7 * cm, fill=1, stroke=0)
 
-    # Sutradhar brand mark drawn inline (no image file needed).
+    # Cloud Siddhi brand mark drawn inline (no image file needed).
     # Logo top-left: x=1.3cm, y aligned with header bar
     mark_size = 1.05  # cm
     mark_x = 1.3
@@ -120,9 +120,9 @@ def _header_footer(canvas, doc):
     title_x = (mark_x + mark_size + 0.35) * cm
     canvas.setFillColor(colors.white)
     canvas.setFont("Helvetica-Bold", 14)
-    canvas.drawString(title_x, A4[1] - 1.0 * cm, "Sutradhar")
+    canvas.drawString(title_x, A4[1] - 1.0 * cm, "Cloud Siddhi")
     canvas.setFont("Helvetica", 8.5)
-    canvas.drawString(title_x, A4[1] - 1.45 * cm, "Cloud Orchestration Platform")
+    canvas.drawString(title_x, A4[1] - 1.45 * cm, "Agentic AI · Cloud Orchestration")
 
     canvas.setFont("Helvetica", 9)
     canvas.drawRightString(
@@ -139,7 +139,7 @@ def _header_footer(canvas, doc):
     canvas.setFont("Helvetica", 8)
     canvas.drawString(
         1.5 * cm, 1.0 * cm,
-        f"Sutradhar by Azkashine  ·  Page {doc.page}",
+        f"Cloud Siddhi by Azkashine  ·  Page {doc.page}",
     )
     canvas.drawRightString(
         A4[0] - 1.5 * cm, 1.0 * cm,
@@ -516,8 +516,8 @@ def generate_audit_pdf(data: AuditData, output_path: str) -> str:
         bottomMargin=2 * cm,
         leftMargin=1.5 * cm,
         rightMargin=1.5 * cm,
-        title=f"Sutradhar Audit Report - {data.workflow_id}",
-        author="Sutradhar by Azkashine",
+        title=f"Cloud Siddhi Audit Report - {data.workflow_id}",
+        author="Cloud Siddhi by Azkashine",
     )
 
     styles = _styles()
@@ -645,7 +645,7 @@ def generate_audit_pdf(data: AuditData, output_path: str) -> str:
     # ---- Signature ----
     story.append(Paragraph("Signatures and Attestation", section))
     sig_rows = [
-        ("Platform", "Sutradhar v1.0 — Cloud Orchestration"),
+        ("Platform", "Cloud Siddhi v1.0 — Agentic Orchestration"),
         ("Vendor", "Azkashine"),
         ("AI Attestation",
          "All checks executed by deterministic policy engine; "

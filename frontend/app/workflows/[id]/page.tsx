@@ -90,7 +90,7 @@ export default function WorkflowDetail({
           </CardHeader>
           <CardBody className="space-y-4 p-4 sm:p-5">
             <p className="text-sm leading-relaxed text-zinc-600">
-              The Sutradhar compliance PDF is produced by the Audit Agent
+              The Cloud Siddhi compliance PDF is produced by the Audit Agent
               <em> after deployment</em>. It documents the real infrastructure
               state, validation results, and approval chain.
             </p>
